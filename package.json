@@ -1,8 +1,9 @@
 {
   "name": "my-waitlist-app",
+  "type": "module",
   "private": true,
   "scripts": {
-    "build": "shopify app build",
+    "build": "prisma generate && vite build",
     "dev": "shopify app dev",
     "info": "shopify app info",
     "generate": "shopify app generate",
