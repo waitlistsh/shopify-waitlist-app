@@ -8,7 +8,7 @@
     "info": "shopify app info",
     "generate": "shopify app generate",
     "deploy": "shopify app deploy",
-    "start": "remix-serve ./build/server/index.js",
+   "start": "ls -R build && remix-serve ./build/server/index.js",
     "docker-start": "npm run setup && npm run start",
     "setup": "prisma generate && prisma migrate deploy",
     "lint": "eslint --cache --cache-location ./node_modules/.cache/eslint ."
