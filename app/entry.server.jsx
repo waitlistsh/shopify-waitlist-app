@@ -1,4 +1,3 @@
-// app/entry.server.jsx
 import { PassThrough } from "stream";
 import { createReadableStreamFromReadable } from "@remix-run/node";
 import { RemixServer } from "@remix-run/react";

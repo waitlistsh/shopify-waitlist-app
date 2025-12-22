@@ -5,17 +5,11 @@ import { defineConfig } from "vite";
 installGlobals();
 
 export default defineConfig({
-  server: {
-    port: 3000,
-    host: "0.0.0.0",
-    hmr: {
-      port: 3000,
-      protocol: "ws",
-    },
-  },
   plugins: [
     remix({
       ignoredRouteFiles: ["**/.*"],
+      // This ensures we build for the server
+      serverBuildFile: "index.js",
     }),
   ],
   build: {
