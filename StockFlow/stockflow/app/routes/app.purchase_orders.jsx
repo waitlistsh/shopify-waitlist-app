@@ -1,15 +1,15 @@
 // app/routes/app.purchase_orders.jsx
-import { useState, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { useLoaderData, useFetcher, useNavigate } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { generatePO } from "../utils/pdfGenerator";
-import { updatePurchaseOrder } from "../services/po.server";
+import { updatePurchaseOrder, receivePurchaseOrder } from "../services/po.server"; 
 import {
   Page, Layout, Card, IndexTable, Text, Badge, Button, Modal, 
-  useIndexResourceState, TextField, BlockStack, InlineStack
+  useIndexResourceState, TextField, InlineStack, Tooltip
 } from "@shopify/polaris";
-import { PageDownIcon, EditIcon, DeleteIcon } from "@shopify/polaris-icons";
+import { PageDownIcon, EditIcon, DeleteIcon, ImportIcon } from "@shopify/polaris-icons"; 
 
 // --- LOADER ---
 export const loader = async ({ request }) => {
@@ -23,7 +23,7 @@ export const loader = async ({ request }) => {
 
 // --- ACTION ---
 export const action = async ({ request }) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const formData = await request.formData();
   const intent = formData.get("intent");
   const id = formData.get("id");
@@ -39,6 +39,11 @@ export const action = async ({ request }) => {
     return { status: "updated" };
   }
 
+  if (intent === "receive") {
+    await receivePurchaseOrder(admin, session.shop, id);
+    return { status: "received" };
+  }
+
   return null;
 };
 
@@ -49,12 +54,21 @@ export default function PurchaseOrders() {
   const navigate = useNavigate();
 
   // Modal State
-  const [activePo, setActivePo] = useState(null); // The PO being edited
-  const [editItems, setEditItems] = useState([]); // The items in the modal
+  const [activePo, setActivePo] = useState(null); 
+  const [editItems, setEditItems] = useState([]); 
+
+  useEffect(() => {
+    if (fetcher.data?.status === "received") {
+        window.shopify.toast.show("Inventory updated successfully");
+    }
+    if (fetcher.data?.status === "updated") {
+        window.shopify.toast.show("PO updated successfully");
+    }
+  }, [fetcher.data]);
 
   const handleEditClick = (po) => {
     setActivePo(po);
-    // Ensure deep copy of items to avoid mutating directly
+    // Clone items to avoid mutating original data directly
     setEditItems(JSON.parse(JSON.stringify(po.items)));
   };
 
@@ -65,25 +79,39 @@ export default function PurchaseOrders() {
 
   const handleUpdateItem = (index, field, value) => {
     const newItems = [...editItems];
-    newItems[index][field] = field === "quantity" ? parseInt(value) : parseFloat(value);
+    newItems[index][field] = value; // Store exact string (e.g. "10.")
     setEditItems(newItems);
   };
 
   const handleSaveChanges = () => {
     if (!activePo) return;
+    
+    const cleanItems = editItems.map(item => ({
+        ...item,
+        cost: parseFloat(item.cost) || 0,
+        quantity: parseInt(item.quantity) || 0,
+        vatRate: parseFloat(item.vatRate) || 0
+    }));
+
     const formData = new FormData();
     formData.append("intent", "update");
     formData.append("id", activePo.id);
-    formData.append("items", JSON.stringify(editItems));
+    formData.append("items", JSON.stringify(cleanItems));
+    
     fetcher.submit(formData, { method: "POST" });
     handleCloseModal();
   };
 
+  const handleReceive = (po) => {
+    if (confirm(`Receive PO #${po.poNumber}? This will add stock to your inventory.`)) {
+        fetcher.submit({ intent: "receive", id: po.id }, { method: "POST" });
+    }
+  };
+
   const handleDownloadPDF = (po) => {
-    // Reconstruct full item objects for the PDF generator
     const itemsForPdf = po.items.map(i => ({
       ...i,
-      vendor: po.vendor // Ensure vendor is attached for grouping logic
+      vendor: po.vendor 
     }));
     
     generatePO(itemsForPdf, { shopHandle }, {
@@ -92,30 +120,48 @@ export default function PurchaseOrders() {
     });
   };
 
-  // --- Table Configuration ---
   const resourceName = { singular: 'purchase order', plural: 'purchase orders' };
   const { selectedResources, allResourcesSelected, handleSelectionChange } = useIndexResourceState(pos);
 
-  const rowMarkup = pos.map((po, index) => (
-    <IndexTable.Row id={po.id} key={po.id} position={index} selected={selectedResources.includes(po.id)}>
-      <IndexTable.Cell><Text fontWeight="bold">#{po.poNumber}</Text></IndexTable.Cell>
-      <IndexTable.Cell>{new Date(po.createdAt).toLocaleDateString()}</IndexTable.Cell>
-      <IndexTable.Cell>{po.vendor}</IndexTable.Cell>
-      <IndexTable.Cell>{po.items.length} Items</IndexTable.Cell>
-      <IndexTable.Cell>${po.totalCost.toFixed(2)}</IndexTable.Cell>
-      <IndexTable.Cell><Badge tone={po.status === "OPEN" ? "info" : "success"}>{po.status}</Badge></IndexTable.Cell>
-      <IndexTable.Cell>
-        <InlineStack gap="200">
-           <Button icon={PageDownIcon} onClick={() => handleDownloadPDF(po)} accessibilityLabel="Download PDF" />
-           <Button icon={EditIcon} onClick={() => handleEditClick(po)} accessibilityLabel="Edit PO" />
-           <Button icon={DeleteIcon} tone="critical" onClick={() => fetcher.submit({intent: "delete", id: po.id}, {method: "POST"})} />
-        </InlineStack>
-      </IndexTable.Cell>
-    </IndexTable.Row>
-  ));
+  const rowMarkup = pos.map((po, index) => {
+    const net = po.totalCost;
+    const tax = po.totalTax || 0;
+    const grandTotal = net + tax;
+
+    return (
+      <IndexTable.Row id={po.id} key={po.id} position={index} selected={selectedResources.includes(po.id)}>
+        <IndexTable.Cell><Text fontWeight="bold">#{po.poNumber}</Text></IndexTable.Cell>
+        <IndexTable.Cell>{new Date(po.createdAt).toLocaleDateString()}</IndexTable.Cell>
+        <IndexTable.Cell>{po.vendor}</IndexTable.Cell>
+        <IndexTable.Cell>{po.items.length} Items</IndexTable.Cell>
+        <IndexTable.Cell>
+          <Text as="span">${grandTotal.toFixed(2)}</Text>
+          <Text as="span" variant="bodySm" tone="subdued" breakWord>
+             (Tax: ${tax.toFixed(2)})
+          </Text>
+        </IndexTable.Cell>
+        <IndexTable.Cell><Badge tone={po.status === "OPEN" ? "info" : "success"}>{po.status}</Badge></IndexTable.Cell>
+        <IndexTable.Cell>
+          <InlineStack gap="200">
+             {po.status === "OPEN" && (
+               <Tooltip content="Mark Received & Add Stock">
+                  <Button icon={ImportIcon} onClick={() => handleReceive(po)} accessibilityLabel="Receive Items" />
+               </Tooltip>
+             )}
+             <Button icon={PageDownIcon} onClick={() => handleDownloadPDF(po)} accessibilityLabel="Download PDF" />
+             <Button icon={EditIcon} onClick={() => handleEditClick(po)} accessibilityLabel="Edit PO" />
+             <Button icon={DeleteIcon} tone="critical" onClick={() => fetcher.submit({intent: "delete", id: po.id}, {method: "POST"})} />
+          </InlineStack>
+        </IndexTable.Cell>
+      </IndexTable.Row>
+    );
+  });
 
   return (
-    <Page title="Purchase Orders" backAction={{ content: "Dashboard", onAction: () => navigate("/app") }}>
+    <Page 
+      title="Purchase Orders" 
+      backAction={{ content: "Dashboard", onAction: () => navigate("/app") }}
+    >
       <Layout>
         <Layout.Section>
           <Card padding="0">
@@ -150,19 +196,20 @@ export default function PurchaseOrders() {
             content: 'Save Changes',
             onAction: handleSaveChanges,
           }}
-          secondaryActions={[
-            {
-              content: 'Cancel',
-              onAction: handleCloseModal,
-            },
-          ]}
-          large
+          secondaryActions={[{ content: 'Cancel', onAction: handleCloseModal }]}
+          size="large"  // <--- UPDATED: This correctly applies the large width
         >
           <Modal.Section>
              <IndexTable
                 resourceName={{ singular: 'item', plural: 'items' }}
                 itemCount={editItems.length}
-                headings={[{ title: 'SKU' }, { title: 'Product' }, { title: 'Cost' }, { title: 'Qty' }]}
+                headings={[
+                    { title: 'SKU' }, 
+                    { title: 'Product' }, 
+                    { title: 'Cost' }, 
+                    { title: 'VAT %' }, 
+                    { title: 'Qty' }
+                ]}
                 selectable={false}
              >
                 {editItems.map((item, idx) => (
@@ -170,19 +217,36 @@ export default function PurchaseOrders() {
                         <IndexTable.Cell>{item.sku}</IndexTable.Cell>
                         <IndexTable.Cell>{item.title}</IndexTable.Cell>
                         <IndexTable.Cell>
-                            <TextField 
-                                type="number" 
-                                value={String(item.cost)} 
-                                onChange={(val) => handleUpdateItem(idx, 'cost', val)} 
-                                prefix="$"
-                            />
+                            <div style={{ maxWidth: '100px' }}>
+                                <TextField 
+                                    type="number" 
+                                    value={String(item.cost)} 
+                                    onChange={(val) => handleUpdateItem(idx, 'cost', val)} 
+                                    prefix="$"
+                                    autoComplete="off"
+                                />
+                            </div>
                         </IndexTable.Cell>
                         <IndexTable.Cell>
-                            <TextField 
-                                type="number" 
-                                value={String(item.quantity)} 
-                                onChange={(val) => handleUpdateItem(idx, 'quantity', val)} 
-                            />
+                            <div style={{ maxWidth: '100px' }}>
+                                <TextField 
+                                    type="number" 
+                                    value={String(item.vatRate || 0)} 
+                                    onChange={(val) => handleUpdateItem(idx, 'vatRate', val)} 
+                                    suffix="%"
+                                    autoComplete="off"
+                                />
+                            </div>
+                        </IndexTable.Cell>
+                        <IndexTable.Cell>
+                            <div style={{ maxWidth: '100px' }}>
+                                <TextField 
+                                    type="number" 
+                                    value={String(item.quantity)} 
+                                    onChange={(val) => handleUpdateItem(idx, 'quantity', val)} 
+                                    autoComplete="off"
+                                />
+                            </div>
                         </IndexTable.Cell>
                     </IndexTable.Row>
                 ))}

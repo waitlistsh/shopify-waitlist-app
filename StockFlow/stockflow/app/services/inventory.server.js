@@ -184,3 +184,96 @@ export async function syncOrders(admin) {
   }
   console.log(`✅ Synced sales from ${orders.length} orders.`);
 }
+
+// --- 3. SYNC SUPPLIERS (Fixed: Added this function) ---
+export async function syncSuppliers(admin, shop) {
+  console.log("🚚 Starting Supplier Sync...");
+  
+  // 1. Fetch all products to get unique vendors
+  const response = await admin.graphql(
+    `#graphql
+      query getVendors {
+        products(first: 250) {
+          nodes {
+            vendor
+          }
+        }
+      }`
+  );
+
+  const responseJson = await response.json();
+  const nodes = responseJson.data.products.nodes;
+  
+  // 2. Extract unique vendors
+  const uniqueVendors = [...new Set(nodes.map(node => node.vendor).filter(v => v))];
+
+  let count = 0;
+  
+  // 3. Upsert into DB
+  for (const vendorName of uniqueVendors) {
+    if (vendorName === "Unknown Vendor") continue;
+    
+    // Check if exists to avoid overwriting custom data like address
+    const existing = await prisma.supplier.findFirst({
+        where: { shop, name: vendorName }
+    });
+
+    if (!existing) {
+        await prisma.supplier.create({
+            data: {
+                shop,
+                name: vendorName,
+                leadTime: 14 // Default
+            }
+        });
+        count++;
+    }
+  }
+
+  return count;
+}
+
+export async function updateInventory(admin, inventoryItemId, locationId, delta) {
+  const response = await admin.graphql(
+    `#graphql
+      mutation inventoryAdjustQuantities($input: InventoryAdjustQuantitiesInput!) {
+        inventoryAdjustQuantities(input: $input) {
+          inventoryAdjustmentGroup {
+            reason
+            changes {
+              name
+              delta
+            }
+          }
+          userErrors {
+            field
+            message
+          }
+        }
+      }`,
+    {
+      variables: {
+        input: {
+          reason: "movement_created", // "received" is also valid if you want to track it as a reception
+          name: "available",
+          changes: [
+            {
+              inventoryItemId: inventoryItemId,
+              locationId: locationId,
+              delta: delta
+            }
+          ]
+        }
+      }
+    }
+  );
+
+  const data = await response.json();
+  
+  if (data.data.inventoryAdjustQuantities.userErrors.length > 0) {
+    console.error("Inventory update failed:", data.data.inventoryAdjustQuantities.userErrors);
+    throw new Error(data.data.inventoryAdjustQuantities.userErrors[0].message);
+  }
+
+  return data.data.inventoryAdjustQuantities.inventoryAdjustmentGroup;
+}
