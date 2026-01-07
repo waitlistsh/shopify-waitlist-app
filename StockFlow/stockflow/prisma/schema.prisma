@@ -1,0 +1,103 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id          String    @id
+  shop        String
+  state       String
+  isOnline    Boolean   @default(false)
+  scope       String?
+  expires     DateTime?
+  accessToken String
+  userId      BigInt?
+  firstName   String?
+  lastName    String?
+  email       String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+  refreshToken         String?
+  refreshTokenExpires  DateTime?
+}
+
+model InventoryItem {
+  id          String   @id @default(uuid())
+  shop        String   
+  productId   String   
+  variantId   String   @unique 
+  sku         String?
+  title       String
+  inventory   Int      @default(0) 
+  cost        Float    @default(0.0)
+  price       Float    @default(0.0)
+  leadTime    Int      @default(14) 
+  vendor      String?
+  category    String?  
+  reorderPoint Int     @default(5) 
+  sales       DailySales[] 
+  overrideVelocity Float?
+  isPinned    Boolean  @default(false)
+  targetDays  Int      @default(30) 
+  supplierId  String?
+  supplier    Supplier? @relation(fields: [supplierId], references: [id])
+}
+
+model DailySales {
+  id            String        @id @default(uuid())
+  date          DateTime
+  quantitySold  Int
+  revenue       Float
+  inventoryItem InventoryItem @relation(fields: [variantId], references: [variantId])
+  variantId     String
+  
+  @@index([variantId, date]) 
+}
+
+model MerchantSettings {
+  shop             String   @id
+  openaiKey        String?
+  riskDaysCritical Int      @default(14)
+  riskDaysWarning  Int      @default(30)
+  lastPoNumber     Int      @default(1000)
+  safetyStock      Int      @default(7)
+  
+  // --- ADD THIS LINE ---
+  syncDraftOrders  Boolean  @default(false)
+  
+  useAI            Boolean? @default(true)
+  lastSyncedAt     DateTime?
+}
+
+model Supplier {
+  id          String   @id @default(uuid())
+  shop        String
+  name        String
+  email       String?
+  contactName String?
+  leadTime    Int      @default(14)
+  items       InventoryItem[]
+  @@unique([shop, name])
+}
+
+// --- UPDATED PO MODEL ---
+model PurchaseOrder {
+  id          String   @id @default(uuid())
+  shop        String
+  poNumber    Int
+  createdAt   DateTime @default(now())
+  vendor      String
+  totalCost   Float
+  status      String   @default("OPEN") // OPEN, SENT, RECEIVED, CLOSED
+  
+  // Stores the snapshot: [{ title, sku, quantity, cost, ... }]
+  items       Json     
+}
